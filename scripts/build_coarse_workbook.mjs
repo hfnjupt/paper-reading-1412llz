@@ -8,6 +8,7 @@ import { FileBlob, SpreadsheetFile, Workbook } from "@oai/artifact-tool";
 const HEADERS = [
   "论文题目",
   "作者及机构",
+  "摘要",
   "关键词",
   "针对的问题",
   "解决的方法",
@@ -41,8 +42,8 @@ function cleanRows(payload) {
     const value = row?.[header];
     let text;
     if (value && typeof value === "object") {
-      if (![1, 4].includes(column) || !Array.isArray(value.runs) || value.runs.length === 0) {
-        throw new Error(`Row ${rowIndex + 2}, ${header}: rich text requires nonempty runs in B or E`);
+      if (![1, 5].includes(column) || !Array.isArray(value.runs) || value.runs.length === 0) {
+        throw new Error(`Row ${rowIndex + 2}, ${header}: rich text requires nonempty runs in B or F`);
       }
       const runs = value.runs.map((run) => {
         if (!run || typeof run.text !== "string" || (run.bold !== undefined && typeof run.bold !== "boolean")) {
@@ -56,19 +57,28 @@ function cleanRows(payload) {
     } else {
       text = value === null || value === undefined ? "" : String(value);
     }
+    if (header === "摘要" && !/^英文摘要：\n[\s\S]*\S[\s\S]*\n\n中文翻译：\n[\s\S]*\S[\s\S]*$/.test(text)) {
+      throw new Error(`Row ${rowIndex + 2}: 摘要 requires full English then full Chinese, or explicit missing-source notices, using the documented bilingual labels`);
+    }
+    if (text.length > 32767) throw new Error(`Row ${rowIndex + 2}, ${header}: exceeds Excel cell limit; do not truncate the abstract`);
     return text.startsWith("=") ? `'${text}` : text;
   }));
   return { values, richText };
 }
 
-function estimatedHeight(row) {
-  const widths = [42, 31, 29, 38, 70, 42, 41, 38];
-  const lines = Math.max(...row.map((value, index) => value.split(/\r?\n/).reduce((sum, line) => {
+function cellHeight(value, width, abstract = false) {
+  const lines = value.split(/\r?\n/).reduce((sum, line) => {
     const units = [...line].reduce((count, char) => count + (char.codePointAt(0) > 255 ? 2 : 1), 0);
-    return sum + Math.max(1, Math.ceil(units / Math.max(8, widths[index] * 0.7)));
-  }, 0)));
-  if (lines * 22 > 400) throw new Error("A row exceeds readable Excel height; shorten coarse notes and retain details in the evidence sidecar");
-  return Math.max(48, 22 * lines);
+    return sum + Math.max(1, Math.ceil(units / Math.max(8, width * (abstract ? 0.85 : 0.7))));
+  }, 0);
+  return lines * (abstract ? 18 : 22) + 8;
+}
+
+function estimatedHeight(row, widths) {
+  const heights = row.map((value, index) => cellHeight(value, widths[index], index === 2));
+  if (heights[2] > 400) throw new Error("Full bilingual abstract exceeds readable height at maximum column width; request layout adjustment, never shorten or truncate either language");
+  if (Math.max(...heights) > 400) throw new Error("Non-abstract coarse notes exceed readable height; shorten those notes only, never the abstract");
+  return Math.max(48, ...heights);
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -91,31 +101,36 @@ if (richText.length) {
   }
 }
 const matrix = [HEADERS, ...(rows.length ? rows : [HEADERS.map(() => "")])];
+const widths = [42, 31, 100, 29, 38, 70, 42, 41, 38];
+while (widths[2] < 255 && rows.some(row => cellHeight(row[2], widths[2], true) > 380)) {
+  widths[2] = Math.min(255, widths[2] + 10);
+}
+const rowHeights = matrix.slice(1).map(row => estimatedHeight(row, widths));
 const workbook = Workbook.create();
 const sheet = workbook.worksheets.add("论文粗读");
 sheet.showGridLines = false;
 sheet.freezePanes.freezeRows(1);
-sheet.getRange(`A1:H${matrix.length}`).values = matrix;
+sheet.getRange(`A1:I${matrix.length}`).values = matrix;
 
-const table = sheet.tables.add(`A1:H${matrix.length}`, true, "PaperReadingTable");
+const table = sheet.tables.add(`A1:I${matrix.length}`, true, "PaperReadingTable");
 table.showFilterButton = true;
 table.showBandedColumns = false;
 
-const headerColors = ["#FFEB9C", "#00B0F0", "#FFC7CE", "#00B0F0", "#C6EFCE", "#00B0F0", "#FFEB9C", "#00B0F0"];
-const headerFontColors = ["#9C6500", "#000000", "#9C0006", "#000000", "#006100", "#000000", "#9C6500", "#000000"];
+const headerColors = ["#FFEB9C", "#00B0F0", "#00B0F0", "#FFC7CE", "#00B0F0", "#C6EFCE", "#00B0F0", "#FFEB9C", "#00B0F0"];
+const headerFontColors = ["#9C6500", "#000000", "#000000", "#9C0006", "#000000", "#006100", "#000000", "#9C6500", "#000000"];
 for (let column = 0; column < HEADERS.length; column += 1) {
   const cell = sheet.getCell(0, column);
   cell.format = {
     fill: headerColors[column],
-    font: { bold: false, color: headerFontColors[column], size: column === 6 ? 16 : 22, name: "等线" },
+    font: { bold: false, color: headerFontColors[column], size: column === 7 ? 16 : 22, name: "等线" },
     wrapText: true,
     verticalAlignment: "center",
   };
 }
-sheet.getRange("A1:H1").format.rowHeight = 60;
+sheet.getRange("A1:I1").format.rowHeight = 60;
 
 if (matrix.length > 1) {
-  const body = sheet.getRange(`A2:H${matrix.length}`);
+  const body = sheet.getRange(`A2:I${matrix.length}`);
   body.format = {
     fill: "#FFFFFF",
     font: { size: 14, name: "等线", color: "#222222", bold: false },
@@ -125,11 +140,11 @@ if (matrix.length > 1) {
     borders: { preset: "inside", style: "thin", color: "#E5E7EB" },
   };
   for (let row = 1; row < matrix.length; row += 1) {
-    sheet.getRange(`A${row + 1}:H${row + 1}`).format.rowHeight = estimatedHeight(matrix[row]);
+    sheet.getRange(`A${row + 1}:I${row + 1}`).format.rowHeight = rowHeights[row - 1];
   }
+  sheet.getRange(`C2:C${matrix.length}`).format.font.size = 12;
 }
 
-const widths = [42, 31, 29, 38, 70, 42, 41, 38];
 for (let column = 0; column < widths.length; column += 1) {
   sheet.getCell(0, column).format.columnWidth = widths[column];
 }
@@ -149,7 +164,7 @@ if (richText.length) {
 const verifiedWorkbook = richText.length
   ? await SpreadsheetFile.importXlsx(await FileBlob.load(outputPath))
   : workbook;
-const verifiedValues = verifiedWorkbook.worksheets.getItem("论文粗读").getRange(`A1:H${matrix.length}`).values;
+const verifiedValues = verifiedWorkbook.worksheets.getItem("论文粗读").getRange(`A1:I${matrix.length}`).values;
 const normalizeEmpty = (values) => values.map((row) => row.map((value) => value ?? ""));
 if (JSON.stringify(normalizeEmpty(verifiedValues)) !== JSON.stringify(normalizeEmpty(matrix))) {
   throw new Error("Export/import changed cell text; inspect the new workbook before delivery");
@@ -163,7 +178,7 @@ if (args.preview) {
   // Never re-export verifiedWorkbook: that would flatten the rich-text styling.
   const preview = await workbook.render({
     sheetName: "论文粗读",
-    range: `A1:H${Math.min(matrix.length, 12)}`,
+    range: `A1:I${Math.min(matrix.length, 12)}`,
     scale: 1,
     format: "png",
   });
@@ -172,9 +187,9 @@ if (args.preview) {
 
 const check = await verifiedWorkbook.inspect({
   kind: "table",
-  range: `论文粗读!A1:H${Math.min(matrix.length, 12)}`,
+  range: `论文粗读!A1:I${Math.min(matrix.length, 12)}`,
   tableMaxRows: 12,
-  tableMaxCols: 8,
+  tableMaxCols: 9,
   maxChars: 6000,
 });
 const errors = await verifiedWorkbook.inspect({

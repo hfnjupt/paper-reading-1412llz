@@ -2,7 +2,7 @@
 """Add verified partial-bold runs to the builder's new XLSX via standard OOXML.
 
 The workbook's values and layout are authored by artifact-tool. This helper
-only changes text styling in B/E, and refuses any change to the cell text.
+only changes text styling in B/F, and refuses any change to the cell text.
 """
 
 import argparse
@@ -49,8 +49,8 @@ def main():
     seen = set()
     for item in plan:
         address = item.get("cell", "")
-        if not re.fullmatch(r"[BE][1-9][0-9]*", address) or int(address[1:]) < 2 or address in seen:
-            raise ValueError(f"Invalid or repeated B/E body cell: {address}")
+        if not re.fullmatch(r"[BF][1-9][0-9]*", address) or int(address[1:]) < 2 or address in seen:
+            raise ValueError(f"Invalid or repeated B/F body cell: {address}")
         seen.add(address)
         runs = item.get("runs")
         if not isinstance(runs, list) or not runs:
