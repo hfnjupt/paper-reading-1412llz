@@ -1,0 +1,7 @@
+interface:
+  display_name: "Paper Reading 1412LLZ"
+  short_description: "精读生成 Obsidian 笔记，粗读生成 Excel 台账"
+  default_prompt: "Use $paper-reading-1412llz to read this paper in deep or coarse mode with traceable evidence."
+
+policy:
+  allow_implicit_invocation: true
